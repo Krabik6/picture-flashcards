@@ -6,6 +6,8 @@ export type Grade = 'forgot' | 'hard' | 'easy';
 export interface Scheduler {
   newState(now: Date): ScheduleState;
   grade(state: ScheduleState, grade: Grade, now: Date): ScheduleState;
+  /** Milliseconds until the next show for each answer. Does not change the state. */
+  preview(state: ScheduleState, now: Date): Record<Grade, number>;
 }
 
 // With three buttons a plain "I remembered" is Good: Rating.Easy would stretch intervals too fast.
@@ -27,6 +29,11 @@ export function createScheduler(): Scheduler {
         fsrs: toPlain(card),
         firstReviewedAt: state.firstReviewedAt ?? now.toISOString(),
       };
+    },
+    preview(state, now) {
+      const stored = state.fsrs as unknown as Parameters<typeof engine.next>[0];
+      const wait = (grade: Grade) => engine.next(stored, now, RATINGS[grade]).card.due.getTime() - now.getTime();
+      return { forgot: wait('forgot'), hard: wait('hard'), easy: wait('easy') };
     },
   };
 }

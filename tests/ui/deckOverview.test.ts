@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest';
-import { buildDeckOverview, relativeDue } from '../../src/ui/deckOverview';
+import { buildDeckOverview, formatInterval, relativeDue } from '../../src/ui/deckOverview';
 import { card, settings } from '../helpers';
 
 const now = new Date('2026-11-05T12:00:00.000Z');
@@ -33,4 +33,13 @@ test('relative due in plain words', () => {
   expect(relativeDue(at(6), today)).toBe('завтра');
   expect(relativeDue(at(8), today)).toBe('через 3 дня');
   expect(relativeDue(at(15), today)).toBe('через 10 дней');
+});
+
+test('intervals in plain short words', () => {
+  const MIN = 60000;
+  expect(formatInterval(30000)).toBe('1 мин');
+  expect(formatInterval(10 * MIN)).toBe('10 мин');
+  expect(formatInterval(5 * 60 * MIN)).toBe('5 ч');
+  expect(formatInterval(3 * 24 * 60 * MIN)).toBe('3 дн');
+  expect(formatInterval(60 * 24 * 60 * MIN)).toBe('2 мес');
 });

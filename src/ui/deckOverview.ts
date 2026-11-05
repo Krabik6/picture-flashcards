@@ -31,3 +31,13 @@ export function relativeDue(dueIso: string, now: Date): string {
   if (days === 1) return 'завтра';
   return `через ${days} ${plural(days, 'день', 'дня', 'дней')}`;
 }
+
+export function formatInterval(ms: number): string {
+  const minutes = Math.max(1, Math.round(ms / 60000));
+  if (minutes < 60) return `${minutes} мин`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours} ч`;
+  const days = Math.round(hours / 24);
+  if (days < 30) return `${days} дн`;
+  return `${Math.round(days / 30)} мес`;
+}

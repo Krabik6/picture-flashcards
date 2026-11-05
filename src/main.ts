@@ -1,26 +1,33 @@
-import { MarkdownView, normalizePath, Notice, Plugin, type TFile, type WorkspaceLeaf } from 'obsidian';
+import { MarkdownView, normalizePath, Notice, Plugin, type TFile } from 'obsidian';
 import type { CreationDeps } from './core/cardCreation';
 import { CreationQueue } from './core/creationQueue';
 import { createDeckText } from './core/deckFormat';
 import { createScheduler, selectDueCards } from './core/scheduler';
-import { AddModal } from './obsidian/addModal';
+import type { Card } from './core/types';
 import { ObsidianDeckStore } from './obsidian/deckStore';
-import { DeckView, VIEW_TYPE_DECK } from './obsidian/deckView';
 import { obsidianPost } from './obsidian/http';
-import { ReviewView, VIEW_TYPE_REVIEW, type ReviewItem } from './obsidian/reviewView';
+import { registerNotePreview } from './obsidian/notePreview';
+import { FlashcardsPopup, type Screen } from './obsidian/popup';
 import { DEFAULT_SETTINGS, resolveProvider, type PluginSettings } from './obsidian/settings';
 import { FlashcardsSettingTab } from './obsidian/settingsTab';
 import { S } from './ui/strings';
 
 const DECK_MARKER = 'picture-flashcards';
 
+export interface ReviewItem {
+  deckPath: string;
+  card: Card;
+}
+
 export default class PictureFlashcardsPlugin extends Plugin {
   settings: PluginSettings = DEFAULT_SETTINGS;
   store!: ObsidianDeckStore;
   deps!: CreationDeps;
   queue!: CreationQueue;
+  private popup: FlashcardsPopup | null = null;
   private knownDecks = new Set<string>();
-  private textModePath: string | null = null;
+  private skipPopupFor: string | null = null;
+  private layoutSettled = false;
   private audio: HTMLAudioElement | null = null;
 
   async onload() {
@@ -35,24 +42,41 @@ export default class PictureFlashcardsPlugin extends Plugin {
     };
     this.queue = new CreationQueue(this.deps);
 
-    this.registerView(VIEW_TYPE_DECK, (leaf) => new DeckView(leaf, this));
-    this.registerView(VIEW_TYPE_REVIEW, (leaf) => new ReviewView(leaf, this));
-    this.addRibbonIcon('images', S.review, () => void this.openReview());
-    this.addCommand({ id: 'add-card', name: S.addCard, callback: () => this.openAdd() });
-    this.addCommand({ id: 'start-review', name: S.review, callback: () => void this.openReview() });
+    this.addRibbonIcon('images', S.appTitle, () => this.openPopup({ name: 'home' }));
+    this.addCommand({ id: 'open', name: S.appTitle, callback: () => this.openPopup({ name: 'home' }) });
+    this.addCommand({ id: 'start-review', name: S.review, callback: () => this.openPopup({ name: 'review', deckPath: null }) });
     this.addSettingTab(new FlashcardsSettingTab(this));
+    registerNotePreview(this);
 
     this.registerEvent(this.app.workspace.on('file-open', (file) => this.onFileOpen(file)));
-    this.registerEvent(this.app.workspace.on('layout-change', () => this.redirectDeckNotes()));
-    this.app.workspace.onLayoutReady(() => this.redirectDeckNotes());
+    // Tabs restored at startup should not throw a popup in the user's face.
+    this.app.workspace.onLayoutReady(() => window.setTimeout(() => { this.layoutSettled = true; }, 1500));
   }
 
   onunload() {
     this.stopMedia();
+    this.popup?.close();
   }
 
   async saveSettings() {
     await this.saveData(this.settings);
+  }
+
+  openPopup(screen: Screen) {
+    this.popup?.close();
+    this.popup = new FlashcardsPopup(this, screen);
+    this.popup.open();
+  }
+
+  popupClosed(popup: FlashcardsPopup) {
+    if (this.popup === popup) this.popup = null;
+  }
+
+  openPluginSettings() {
+    this.popup?.close();
+    const { setting } = this.app as unknown as { setting: { open(): void; openTabById(id: string): void } };
+    setting.open();
+    setting.openTabById(this.manifest.id);
   }
 
   private isDeckFile(file: TFile): boolean {
@@ -93,61 +117,25 @@ export default class PictureFlashcardsPlugin extends Plugin {
     return items;
   }
 
-  openAdd(deckPath?: string) {
-    new AddModal(this, deckPath).open();
+  showAsText(path: string) {
+    this.popup?.close();
+    this.skipPopupFor = path;
+    void this.app.workspace.openLinkText(path, '', false, { state: { mode: 'source', source: true } });
+    window.setTimeout(() => { this.skipPopupFor = null; }, 1000);
   }
 
-  private async revealLeafOf(type: string): Promise<WorkspaceLeaf> {
-    const { workspace } = this.app;
-    const existing = workspace.getLeavesOfType(type)[0];
-    const leaf = existing ?? workspace.getLeaf('tab');
-    if (!existing) await leaf.setViewState({ type, active: true });
-    await workspace.revealLeaf(leaf);
-    workspace.setActiveLeaf(leaf, { focus: true });
-    return leaf;
-  }
-
-  async openReview(deckPath?: string) {
-    const leaf = await this.revealLeafOf(VIEW_TYPE_REVIEW);
-    const view = leaf.view;
-    if (view instanceof ReviewView) {
-      if (deckPath) await view.start(deckPath);
-      else await view.renderStart();
-    }
-  }
-
-  async openDeck(path: string) {
-    const leaf = this.app.workspace.getLeaf(false);
-    await leaf.setViewState({ type: VIEW_TYPE_DECK, state: { file: path }, active: true });
-  }
-
-  async showAsText(leaf: WorkspaceLeaf, path: string) {
-    this.textModePath = path;
-    await leaf.setViewState({ type: 'markdown', state: { file: path, mode: 'source' }, active: true });
-    if (leaf.view instanceof MarkdownView) this.addDeckAction(leaf.view, path);
-  }
-
-  private addDeckAction(view: MarkdownView, path: string) {
-    const action = view.addAction('images', S.openAsDeck, () => {
-      this.textModePath = null;
-      action.remove();
-      void view.leaf.setViewState({ type: VIEW_TYPE_DECK, state: { file: path }, active: true });
-    });
-  }
-
+  /** Opening a deck note shows the popup. The note itself stays readable behind it. */
   private onFileOpen(file: TFile | null) {
-    if (this.textModePath && file?.path !== this.textModePath) this.textModePath = null;
-    this.redirectDeckNotes();
-  }
-
-  /** A deck note opens as the plugin's window. Other notes are not touched. */
-  private redirectDeckNotes() {
-    this.app.workspace.iterateAllLeaves((leaf) => {
-      const { view } = leaf;
-      if (!(view instanceof MarkdownView) || !view.file) return;
-      if (view.file.path === this.textModePath || !this.isDeckFile(view.file)) return;
-      void leaf.setViewState({ type: VIEW_TYPE_DECK, state: { file: view.file.path }, active: leaf === this.app.workspace.getMostRecentLeaf() });
-    });
+    if (!this.layoutSettled || !file || !this.isDeckFile(file)) return;
+    if (this.skipPopupFor === file.path || this.popup) return;
+    this.skipPopupFor = file.path;
+    window.setTimeout(() => { this.skipPopupFor = null; }, 1000);
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    if (view?.file?.path === file.path && view.getMode() === 'source') {
+      const state = view.leaf.getViewState();
+      void view.leaf.setViewState({ ...state, state: { ...state.state, mode: 'preview' } });
+    }
+    this.openPopup({ name: 'deck', path: file.path });
   }
 
   playMedia(deckPath: string, relativePath: string | null) {

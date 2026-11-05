@@ -62,3 +62,14 @@ test('nextDueAt returns earliest future due or null', () => {
   expect(nextDueAt([a, b, reviewed('c')], now)?.toISOString()).toBe('2026-11-07T00:00:00.000Z');
   expect(nextDueAt([], now)).toBeNull();
 });
+
+test('preview shows growing intervals without changing the state', () => {
+  const s = createScheduler();
+  const st = s.grade(s.newState(now), 'easy', now);
+  const copy = JSON.parse(JSON.stringify(st));
+  const p = s.preview(st, later);
+  expect(p.forgot).toBeLessThan(p.easy);
+  expect(p.hard).toBeLessThanOrEqual(p.easy);
+  expect(p.forgot).toBeGreaterThan(0);
+  expect(st).toEqual(copy);
+});
