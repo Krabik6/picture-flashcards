@@ -1,0 +1,9 @@
+{
+  "id": "picture-flashcards",
+  "name": "Picture Flashcards",
+  "version": "0.1.0",
+  "minAppVersion": "1.11.4",
+  "description": "Flashcards where the question is a picture. Type a word, AI makes the picture, voice and explanation.",
+  "author": "Lev Budko",
+  "isDesktopOnly": false
+}

@@ -1,0 +1,22 @@
+{
+  "name": "picture-flashcards",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Obsidian plugin: AI picture flashcards with spaced repetition",
+  "type": "module",
+  "scripts": {
+    "build": "node esbuild.config.mjs production",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "deploy": "node scripts/deploy.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "obsidian": "^1.14.4",
+    "typescript": "^7.0.2",
+    "vitest": "^3.2.7"
+  },
+  "dependencies": {
+    "ts-fsrs": "^5.4.2"
+  }
+}
