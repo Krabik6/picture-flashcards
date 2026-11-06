@@ -1,37 +1,53 @@
-import { Notice, setIcon, type EventRef } from 'obsidian';
+import { Notice, Platform, setIcon, type EventRef } from 'obsidian';
 import { regenerateImage } from '../../core/cardCreation';
 import type { Card } from '../../core/types';
-import { decideAdd, progressLabel } from '../../ui/addFlow';
+import { decideAdd, progressLabel, progressStep } from '../../ui/addFlow';
 import { errorText, S } from '../../ui/strings';
-import { iconButton, textButton } from '../cardBack';
+import { iconButton, renderMaking, textButton } from '../cardBack';
 import type { FlashcardsPopup } from '../popup';
 
 interface Row {
   el: HTMLElement;
   signature: string;
+  image: string | null;
   deckPath: string;
   cardId: string;
 }
 
-/** The field for new words and the live list of what is being made. Used on several screens. */
+interface AddBarOptions {
+  /** Enter on an empty field. */
+  onEmptyEnter?: () => void;
+  /** Called on every keystroke with what is typed. */
+  onType?: (text: string) => void;
+}
+
+const LIST_SIZE = 5;
+
+/**
+ * The field for new words. On a deck screen new cards appear in the grid.
+ * On other screens they appear in a live list under the field.
+ */
 export class AddBar {
   private plugin = this.popup.plugin;
   private input!: HTMLInputElement;
   private select: HTMLSelectElement | null = null;
   private warningEl!: HTMLElement;
-  private listEl!: HTMLElement;
+  private listEl: HTMLElement | null = null;
   private rows = new Map<string, Row>();
   private busy = new Set<string>();
   private offQueue: (() => void) | null = null;
   private modifyRef: EventRef | null = null;
   private timer: number | null = null;
 
-  constructor(private popup: FlashcardsPopup, private fixedDeck: string | null) {}
+  constructor(private popup: FlashcardsPopup, private fixedDeck: string | null, private options: AddBarOptions = {}) {}
 
   render(parent: HTMLElement): void {
-    const box = parent.createDiv({ cls: 'pf-addbar' });
+    const sticky = parent.createDiv({ cls: 'pf-composer-wrap' });
+    const box = sticky.createDiv({ cls: 'pf-composer' });
+    setIcon(box.createDiv({ cls: 'pf-composer-icon' }), 'plus');
+    const hint = Platform.isPhone && !this.fixedDeck ? S.wordPlaceholderShort : S.wordPlaceholder;
     this.input = box.createEl('input', {
-      type: 'text', cls: 'pf-addbar-input', attr: { placeholder: S.wordPlaceholder, 'aria-label': S.wordPlaceholder, autocomplete: 'off', enterkeyhint: 'done' },
+      type: 'text', cls: 'pf-composer-input', attr: { placeholder: hint, 'aria-label': S.wordPlaceholder, autocomplete: 'off', spellcheck: 'false', enterkeyhint: 'done' },
     });
     this.input.addEventListener('keydown', (event) => {
       if (event.key !== 'Enter' || event.isComposing) return;
@@ -39,9 +55,10 @@ export class AddBar {
       event.stopPropagation();
       void this.submit();
     });
+    this.input.addEventListener('input', () => this.options.onType?.(this.input.value));
     if (!this.fixedDeck) {
       const decks = this.plugin.listDecks();
-      this.select = box.createEl('select', { cls: 'dropdown pf-addbar-deck', attr: { 'aria-label': S.deck } });
+      this.select = box.createEl('select', { cls: 'pf-composer-deck', attr: { 'aria-label': S.deck } });
       for (const deck of decks) this.select.createEl('option', { text: deck.name, value: deck.path });
       const last = this.plugin.settings.lastDeckPath;
       if (last && decks.some((d) => d.path === last)) this.select.value = last;
@@ -52,20 +69,29 @@ export class AddBar {
         this.input.focus();
       });
     }
-    this.warningEl = parent.createDiv();
-    this.listEl = parent.createDiv({ cls: 'pf-addlist' });
-    this.offQueue = this.plugin.queue.subscribe(() => this.schedule());
-    this.modifyRef = this.plugin.app.vault.on('modify', (file) => {
-      if ([...this.rows.values()].some((r) => r.deckPath === file.path)) this.schedule();
-    });
-    void this.refresh();
-    window.setTimeout(() => this.input.focus(), 0);
+    this.warningEl = sticky.createDiv();
+    if (!this.fixedDeck) {
+      this.listEl = parent.createDiv({ cls: 'pf-addlist' });
+      this.offQueue = this.plugin.queue.subscribe(() => this.schedule());
+      this.modifyRef = this.plugin.app.vault.on('modify', (file) => {
+        if ([...this.rows.values()].some((r) => r.deckPath === file.path)) this.schedule();
+      });
+      void this.refresh();
+    }
   }
 
   dispose(): void {
     this.offQueue?.();
     if (this.modifyRef) this.plugin.app.vault.offref(this.modifyRef);
     if (this.timer !== null) window.clearTimeout(this.timer);
+  }
+
+  /** A phone keyboard should not jump up just because a screen opened. */
+  focus(): void {
+    if (Platform.isMobile || !this.input) return;
+    window.setTimeout(() => {
+      if (this.input.isConnected && !activeDocument.activeElement?.matches('input, textarea, select')) this.input.focus();
+    }, 0);
   }
 
   private targetDeck(): string | null {
@@ -77,7 +103,12 @@ export class AddBar {
     if (!deckPath) return;
     // Taken and cleared at once, so the next word can be typed while this one is being saved.
     const typed = this.input.value;
+    if (!typed.trim() && !forceWord) {
+      this.options.onEmptyEnter?.();
+      return;
+    }
     this.input.value = '';
+    this.options.onType?.('');
     this.input.focus();
     this.warningEl.empty();
     let word = forceWord;
@@ -118,24 +149,23 @@ export class AddBar {
 
   /** Redraws only rows that changed. */
   private async refresh() {
-    if (!this.listEl.isConnected) return;
-    const items = this.plugin.queue.items().filter((i) =>
-      (!this.fixedDeck || i.deckPath === this.fixedDeck)
-      && (this.popup.added.has(i.cardId) || i.state === 'waiting' || i.state === 'working'));
+    const list = this.listEl;
+    if (!list?.isConnected) return;
+    const items = this.plugin.queue.items()
+      .filter((i) => this.popup.added.has(i.cardId) || i.state === 'waiting' || i.state === 'working')
+      .slice(-LIST_SIZE);
     const decks = new Map<string, Card[]>();
+    const shown = new Set<string>();
     for (const item of items) {
       if (!decks.has(item.deckPath)) decks.set(item.deckPath, (await this.plugin.store.readDeck(item.deckPath)).cards);
       const card = decks.get(item.deckPath)!.find((c) => c.id === item.cardId);
+      if (!card) continue;
+      shown.add(item.cardId);
       let row = this.rows.get(item.cardId);
-      if (!card) {
-        row?.el.remove();
-        this.rows.delete(item.cardId);
-        continue;
-      }
       if (!row) {
-        row = { el: createDiv({ cls: 'pf-addrow' }), signature: '', deckPath: item.deckPath, cardId: item.cardId };
+        row = { el: createDiv({ cls: 'pf-addrow' }), signature: '', image: card.media.image, deckPath: item.deckPath, cardId: item.cardId };
         this.rows.set(item.cardId, row);
-        this.listEl.prepend(row.el);
+        list.prepend(row.el);
       }
       const working = item.state === 'waiting' || item.state === 'working';
       const signature = JSON.stringify([card.status, card.explanation, card.media, card.lastError, working, this.busy.has(card.id)]);
@@ -144,26 +174,34 @@ export class AddBar {
         this.renderRow(row, card, working);
       }
     }
+    for (const [id, row] of this.rows) {
+      if (shown.has(id)) continue;
+      row.el.remove();
+      this.rows.delete(id);
+    }
   }
 
   private renderRow(row: Row, card: Card, working: boolean) {
     const { el, deckPath } = row;
     el.empty();
-    const open = () => this.popup.go({ name: 'card', path: deckPath, id: card.id });
     const main = el.createEl('button', { cls: 'pf-addrow-main' });
-    main.addEventListener('click', open);
+    main.addEventListener('click', () => this.popup.go({ name: 'card', path: deckPath, id: card.id }));
     const url = this.plugin.store.resourceUrl(deckPath, card.media.image);
-    if (url) main.createEl('img', { cls: 'pf-addrow-pic', attr: { src: url, alt: '' } });
-    else {
-      const placeholder = main.createDiv({ cls: 'pf-addrow-pic pf-addrow-empty' });
-      if (!working) setIcon(placeholder, 'image-off');
+    if (url) {
+      const img = main.createEl('img', { cls: 'pf-addrow-pic', attr: { src: url, alt: '' } });
+      if (row.image !== card.media.image) img.addClass('pf-develop');
+      if (this.busy.has(card.id)) img.addClass('is-redrawing');
+    } else {
+      const placeholder = main.createDiv({ cls: 'pf-addrow-pic pf-blank' });
+      if (working) placeholder.addClass('is-working');
+      else setIcon(placeholder, 'image-off');
     }
+    row.image = card.media.image;
     const text = main.createDiv({ cls: 'pf-addrow-text' });
     text.createEl('strong', { text: card.word });
     const line = text.createDiv({ cls: 'pf-addrow-status' });
     if (working) {
-      line.createSpan({ cls: 'pf-spinner' });
-      line.createSpan({ text: progressLabel(card) });
+      renderMaking(line, progressStep(card), progressLabel(card));
     } else if (card.status === 'draft') {
       line.addClass('pf-error');
       line.setText(card.lastError ?? S.draft);
@@ -175,10 +213,7 @@ export class AddBar {
       iconButton(el, 'rotate-cw', S.retry, () => this.plugin.queue.retry(deckPath, card.id, card.word));
       return;
     }
-    if (this.busy.has(card.id)) {
-      el.createSpan({ cls: 'pf-spinner pf-addrow-busy' });
-      return;
-    }
+    if (this.busy.has(card.id)) return;
     iconButton(el, 'refresh-cw', S.otherImage, () => void this.swap(row, card));
   }
 

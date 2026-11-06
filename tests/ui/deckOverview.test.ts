@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest';
-import { buildDeckOverview, formatInterval, relativeDue } from '../../src/ui/deckOverview';
+import { buildDeckOverview, formatInterval, matchesQuery, orderedCards, relativeDue } from '../../src/ui/deckOverview';
 import { card, settings } from '../helpers';
 
 const now = new Date('2026-11-05T12:00:00.000Z');
@@ -23,6 +23,24 @@ test('missing image goes to needsAttention, not due', () => {
 
 test('broken blocks are passed through', () => {
   expect(buildDeckOverview({ settings, cards: [], brokenBlocks: 2 }, new Set(), now).brokenBlocks).toBe(2);
+});
+
+test('cards go in order: drafts, missing files, then soonest first', () => {
+  const draft = card({ id: 'd', status: 'draft' });
+  const late = due('late', '2026-12-01T00:00:00.000Z');
+  const soon = due('soon', '2026-11-01T00:00:00.000Z');
+  const gone = due('gone', '2026-11-02T00:00:00.000Z');
+  const o = buildDeckOverview({ settings, cards: [late, soon, gone, draft], brokenBlocks: 0 }, new Set(['gone']), now);
+  expect(orderedCards(o).map((c) => c.id)).toEqual(['d', 'gone', 'soon', 'late']);
+});
+
+test('search looks in the word and its reading, ignoring case', () => {
+  const c = card({ word: 'Umbrella', reading: 'ˈʌmbrelə' });
+  expect(matchesQuery(c, ' umb ')).toBe(true);
+  expect(matchesQuery(c, 'ʌm')).toBe(true);
+  expect(matchesQuery(c, '')).toBe(true);
+  expect(matchesQuery(c, 'rain')).toBe(false);
+  expect(matchesQuery(card({ word: '猫', reading: null }), 'ねこ')).toBe(false);
 });
 
 test('relative due in plain words', () => {

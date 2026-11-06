@@ -23,6 +23,18 @@ export function buildDeckOverview(deck: ParsedDeck, missing: Set<string>, now: D
   };
 }
 
+/** The order cards are shown in: unfinished ones first, then the soonest to come back. */
+export function orderedCards(overview: DeckOverview): Card[] {
+  const soonest = [...overview.ready].sort((a, b) => a.schedule.due.localeCompare(b.schedule.due));
+  return [...overview.drafts, ...overview.needsAttention, ...soonest];
+}
+
+export function matchesQuery(card: Card, query: string): boolean {
+  const needle = query.trim().toLocaleLowerCase();
+  if (!needle) return true;
+  return [card.word, card.reading ?? ''].some((text) => text.toLocaleLowerCase().includes(needle));
+}
+
 const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
 
 export function relativeDue(dueIso: string, now: Date): string {

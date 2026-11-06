@@ -56,8 +56,71 @@ test('failed save keeps the card on screen', async () => {
   expect(s.error()).toBe('disk');
 });
 
+test('next shows the card after the current one', async () => {
+  const s = session(['a', 'b']);
+  expect(s.next()).toBe('b');
+  s.reveal();
+  await s.rate('easy');
+  expect(s.next()).toBeNull();
+});
+
+test('forgotten card comes back with its saved state', async () => {
+  const s = new ReviewSession(['a', 'b'], async (item) => `${item}-saved`);
+  s.reveal();
+  await s.rate('forgot');
+  s.reveal();
+  await s.rate('easy');
+  expect(s.current()).toBe('a-saved');
+});
+
+test('undo restores the card, the queue and the saved state', async () => {
+  const restored: string[] = [];
+  const s = new ReviewSession(['a', 'b'], async () => {}, async (before) => { restored.push(before); });
+  expect(s.canUndo()).toBe(false);
+  s.reveal();
+  await s.rate('forgot');
+  expect(s.current()).toBe('b');
+  await s.undo();
+  expect(restored).toEqual(['a']);
+  expect(s.current()).toBe('a');
+  expect(s.remaining()).toBe(2);
+  expect(s.revealed()).toBe(true);
+  expect(s.canUndo()).toBe(false);
+});
+
+test('undo works after the last card', async () => {
+  const s = session(['a']);
+  s.reveal();
+  await s.rate('easy');
+  expect(s.current()).toBeNull();
+  await s.undo();
+  expect(s.current()).toBe('a');
+});
+
+test('failed undo keeps everything as it was', async () => {
+  const s = new ReviewSession(['a', 'b'], async () => {}, async () => { throw new Error('disk'); });
+  s.reveal();
+  await s.rate('easy');
+  await s.undo();
+  expect(s.current()).toBe('b');
+  expect(s.canUndo()).toBe(true);
+  expect(s.error()).toBe('disk');
+});
+
+test('answers lists what was rated', async () => {
+  const s = session(['a', 'b']);
+  s.reveal();
+  await s.rate('forgot');
+  s.reveal();
+  await s.rate('easy');
+  expect(s.answers()).toEqual([{ item: 'a', grade: 'forgot' }, { item: 'b', grade: 'easy' }]);
+});
+
 test('keys', () => {
   expect(keyToAction(' ', false)).toBe('reveal');
+  expect(keyToAction('Enter', false)).toBe('reveal');
+  expect(keyToAction('z', false)).toBe('undo');
+  expect(keyToAction('я', true)).toBe('undo');
   expect(keyToAction(' ', true)).toBeNull();
   expect(keyToAction('1', false)).toBeNull();
   expect(keyToAction('1', true)).toBe('forgot');
